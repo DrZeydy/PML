@@ -1,0 +1,136 @@
+---
+title: "Weight Lifting Exercises - are you doing them right?"
+author: "Zeydy Ortiz, Ph. D."
+date: "September 27, 2015"
+output: html_document
+---
+
+> "Practice does not make perfect. Only perfect practice makes perfect." - Vince Lombardi
+
+Weight lifting exercises are often done without assistance.  When the exercise is done correctly, it helps build muscle, gain strength and even help lose weight.  Unfortunately, if the exercise is done incorrectly it has the potential to cause harm.
+Using the data from the "Weight Lifting Exercises Dataset" 
+I built a model to predict whether a Unilateral Dumbbell Biceps Curl was performed correctly.  If not, the model identifies the type of mistake made.  After trying with linear models and trees, a random forest model was able to accurately predict how the exercise was performed. This kind of predictive model has the potential of aiding the weight lifter perform a "perfect practice."
+
+### DATA
+
+The "Weight Lifting Exercises Dataset" was built by having 6 subjects perform the Unilateral Dumbbell Biceps Curl exercise multiple times in different ways.  The subjects were wearing different sensors in their body that collected data about the exercise they were performing: arm, forearm, and belt sensors.  In addition, the lightweight dumbbells used in the exercise also had sensors attached that would record their orientation.
+
+As part of the dataset, additional metrics were calculated from the sensor data including kurtosis, skewness, amplitude, and others.  A set of consecutive measurements in a "window" were used to calculate the derived metrics.  Additional information about the data is at <http://groupware.les.inf.puc-rio.br/har>.
+
+For this project, the dataset was provided as two files: pml-training.csv and pml-testing.csv.  They represent a subset of the original dataset from above.  The dataset in pml-training.csv includes the "classe" variable that identifies how the exercise was performed.  The 20 datapoints in pml-testing.csv were used to evaluate the results of the model.  The classes are:
+
+* Class A - "Perfect practice": performed according to specified execution
+* Class B - Mistake: throwing elbows to the front
+* Class C - Mistake: lifting the dumbbell only halfway
+* Class D - Mistake: lowering the dumbbell only halfway
+* Class E - Mistake: throwing the hips to the front
+ 
+### CLEANING THE DATA
+
+The dataset from pml-training.csv had 160 columns and 14718 observations.  The first 7 columns identified when the measurements were taken and who performed the exercise.  This information is not relevant for building a model so I eliminated them from the dataset.  I also eliminated columns with high number of NAs and "#DIV/0" errors.  These columns were the derived metrics since they were only calculated  at the end of a "window."  Domain expertise would be needed to reconstruct the metrics that were missing.
+
+### BUILDING THE MODEL
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+setwd("C:/zol/R/MachineLearning/")
+weight.lift <- read.csv("pml-training.csv", stringsAsFactors = FALSE)
+
+# make classe a factor
+weight.lift$classe <- as.factor(weight.lift$classe)
+
+#eliminate identifying columns
+weight.lift <- weight.lift[,c(8:160)]
+
+# eliminate all columns with #DIV/0! errors (loaded as character strings) 
+# alse eliminate columns with NAs
+for (i in c(153:1)) {
+  if(is.character(weight.lift[,i])) 
+    weight.lift[,i] <- NULL
+  else if(sum(is.na(weight.lift[,i]))>0)
+    weight.lift[,i] <- NULL
+}
+# derived metrics are only calculated for "new_window" == "yes"
+
+# create training and testing sets for modeling
+library(Rcpp)
+library(ggplot2)
+library(caret)
+library(rattle)
+library(rpart)
+library(randomForest)
+set.seed(123)
+inTrain <- createDataPartition (y=weight.lift$classe, p=0.75, list=FALSE)
+training <- weight.lift[inTrain,]
+testing <- weight.lift[-inTrain,]
+```
+
+In order to do cross-validation of the models, I divided the dataset into a training and a testing set.  Using the training set only, I first determined the predictors that were highly correlated (correlation > 0.8) and eliminated the ones that were redundant.
+```{r}
+# determine highly correlated predictors
+M <- abs(cor(training[,-53]))
+diag(M) <- 0
+which(M>0.8, arr.ind=T)
+```
+Redundant predictors eliminated were 1, 2, 4, 8, 9, 13, 19, 24, 26, 34, and 36.
+
+```{r, echo=FALSE, warning=FALSE}
+training$roll_belt <- NULL #1
+training$pitch_belt <- NULL #2
+training$total_accel_belt <- NULL #4
+training$accel_belt_x <- NULL #8
+training$accel_belt_y <- NULL #9
+training$magnet_belt_z <- NULL #13
+training$gyros_arm_y <- NULL #19
+training$magnet_arm_x <- NULL #24
+training$magnet_arm_z <- NULL #26
+training$accel_dumbbell_x <- NULL #34
+training$accel_dumbbell_z <- NULL #36
+
+```
+
+#### Predicting with Random Forests
+
+To accurately predict the class of exercise that was performed, I used the "rf" method to build a model.  This method took longer to execute than other methods but was the most accurate.  This model perfectly fit the training data as we can see from the confusion matrix below:
+
+```{r, warning=FALSE}
+fitControl <- trainControl(method = "none")
+tgrid <- expand.grid(mtry=6) 
+modFitRF <- train(classe~., method="rf", data=training, 
+                  trControl = fitControl, tuneGrid = tgrid)
+pred <- predict(modFitRF)
+confusionMatrix(pred, training$classe)
+```
+
+I performed cross-validation with the testing set I had set aside at the beginning.  The out of sample accuracy was 0.9939.  As expected, this is a little lower than the in-sample accuracy.
+```{r, warning=FALSE}
+predTest <- predict(modFitRF, newdata=testing)
+confusionMatrix(predTest, testing$classe)
+```
+The out-of-sample error rate was very small since only 31 out of the 4904 samples in the testing set were mis-classified.
+
+Looking at the variable importance plot, we see that the 'yaw_belt' variable was a strong predictor used in many of the trees created by the model.
+
+```{r, echo=FALSE, warning=FALSE}
+varImpPlot(modFitRF$finalModel, main="Variable Importance plot")
+```
+
+#### Predicting with Regression
+
+Initially, I started out building a generalized linear model (GLM) for this dataset.  This was a lot more trouble than what it was worth for several reasons.  First of all, GLM can only use 2-class outcome.  Therefore, I had to create dummy variables for each class to indicate that the outcome would be "in class A" or "not in class A" for instance.  Using each of the new 5 dummy variables I then created 5 independent models and an ensemble model to ultimately predict the "classe."  When I tested the accuracy of this ensemble with the training set, the in-sample accuracy was 0.4997.  The main probelm was that the datapoints were classified only in one of three classes: A, C, or E.
+
+The reason GLM does not work for this dataset is that the measured values did not vary too much between classes.  Therefore, there was no linear relationship between the predictors and the classes.
+
+#### Predicting with Trees
+
+Next, I used the "rpart" method to create a classification tree.  The in-sample accuracy improved to 0.5797.  
+```{r, warning=FALSE}
+modFitTree <- train(classe~., method="rpart",data=training)
+fancyRpartPlot(modFitTree$finalModel)
+```
+
+
+### CONCLUSION
+
+Building predictive models is fun when you find one that works very well for the data.  It is important to keep in mind the underlying assumptions for the modeling method to understand when one is applicable.
+
+There is tremendous opportunity to integrate a predictive model into activity monitors to help athletes perform better.
+
